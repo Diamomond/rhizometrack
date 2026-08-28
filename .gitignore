@@ -1,0 +1,9 @@
+/target
+/result
+Cargo.lock
+flake.lock
+.direnv
+.envrc
+*.db
+*.sqlite
+*.sqlite3
