@@ -4,7 +4,7 @@ rhizometrack is an offline Rust app.
 It tracks learning time by category.
 It uses SQLite for local data.
 
-![screenshot](https://imgur.com/a/9iIEJ9m)
+![](https://i.imgur.com/h2uXWzz.png)
 
 ## Main features
 
