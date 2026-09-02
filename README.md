@@ -6,11 +6,9 @@ It uses SQLite for local data.
 
 | | | |
 |:-------------------------:|:-------------------------:|:-------------------------:|
-|<img width="1604" alt="timer page" src="https://imgur.com/oXPDTJo">  |  <img width="1604" alt="stats page" src="https://imgur.com/vzjxOcH">|
-|<img width="1604" alt="history page" src="https://imgur.com/jP808SC">  |  <img width="1604" alt="settings page" src="https://imgur.com/ipkvCZa">|
+|<img width="1604" alt="timer page" src="https://imgur.com/oXPDTJo">  |  <img width="1604" alt="stats page" src="https://imgur.com/vzjxOcH">
+|<img width="1604" alt="history page" src="https://imgur.com/jP808SC">  |  <img width="1604" alt="settings page" src="https://imgur.com/ipkvCZa">
 
-
-![](https://i.imgur.com/h2uXWzz.png)
 
 ## Main features
 
