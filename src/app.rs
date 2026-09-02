@@ -153,7 +153,9 @@ enum Message {
     StartPressed,
     PausePressed,
     StopPressed,
-    DeleteCategory(i64),
+    RequestDeleteCategory(i64),
+    ConfirmDeleteCategory(i64),
+    CancelDeleteCategory,
     ToggleNotes(i64),
     DeleteSession(i64),
     SelectPreviousMonth,
@@ -225,6 +227,7 @@ pub struct SkillTrackApp {
     expanded_notes: HashSet<i64>,
     new_category_name: String,
     show_new_category_input: bool,
+    confirm_delete_category_id: Option<i64>,
     timer: TimerSession,
     notes_content: text_editor::Content,
     history_notes: HashMap<i64, text_editor::Content>,
@@ -248,6 +251,7 @@ impl SkillTrackApp {
             expanded_notes: HashSet::new(),
             new_category_name: String::new(),
             show_new_category_input: false,
+            confirm_delete_category_id: None,
             timer: TimerSession::default(),
             notes_content: text_editor::Content::new(),
             history_notes: HashMap::new(),
@@ -296,6 +300,10 @@ impl SkillTrackApp {
 
     fn set_info(&mut self, message: &str) {
         self.status_message = Some(message.to_string());
+    }
+
+    fn clear_status(&mut self) {
+        self.status_message = None;
     }
 
     fn current_notes_text(&self) -> String {
@@ -513,6 +521,7 @@ impl SkillTrackApp {
         }
 
         self.timer.start();
+        self.clear_status();
     }
 
     fn pause_timer(&mut self) {
@@ -557,7 +566,11 @@ impl SkillTrackApp {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::ChangePage(next) => self.page = next,
+            Message::ChangePage(next) => {
+                self.page = next;
+                self.confirm_delete_category_id = None;
+                self.clear_status();
+            }
             Message::Tick => {
                 self.flush_history_note_saves();
             }
@@ -602,20 +615,35 @@ impl SkillTrackApp {
             Message::StartPressed => self.start_timer(),
             Message::PausePressed => self.pause_timer(),
             Message::StopPressed => self.stop_timer(),
-            Message::DeleteCategory(category_id) => match self.repo.delete_category(category_id) {
-                Ok(()) => {
-                    if self.selected_category_id == Some(category_id) {
-                        self.selected_category_id = None;
-                    }
-                    if self.timer.category_id == Some(category_id) {
-                        self.timer.category_id = None;
-                    }
-                    if let Err(err) = self.refresh_data() {
-                        self.set_error("Failed to refresh data after category deletion", &err);
-                    }
+            Message::RequestDeleteCategory(category_id) => {
+                self.confirm_delete_category_id = Some(category_id);
+                self.set_info("Press Confirm to delete this category.");
+            }
+            Message::ConfirmDeleteCategory(category_id) => {
+                if self.confirm_delete_category_id != Some(category_id) {
+                    self.set_info("Select delete on the category first.");
+                    return Task::none();
                 }
-                Err(err) => self.set_error("Failed to delete category", &err),
-            },
+                match self.repo.delete_category(category_id) {
+                    Ok(()) => {
+                        self.confirm_delete_category_id = None;
+                        if self.selected_category_id == Some(category_id) {
+                            self.selected_category_id = None;
+                        }
+                        if self.timer.category_id == Some(category_id) {
+                            self.timer.category_id = None;
+                        }
+                        if let Err(err) = self.refresh_data() {
+                            self.set_error("Failed to refresh data after category deletion", &err);
+                        }
+                    }
+                    Err(err) => self.set_error("Failed to delete category", &err),
+                }
+            }
+            Message::CancelDeleteCategory => {
+                self.confirm_delete_category_id = None;
+                self.set_info("Category delete canceled.");
+            }
             Message::ToggleNotes(session_id) => {
                 if !self.expanded_notes.insert(session_id) {
                     self.expanded_notes.remove(&session_id);
@@ -765,7 +793,7 @@ impl SkillTrackApp {
             });
         }
 
-        base.padding(16).max_width(980).into()
+        base.padding(16).max_width(1280).into()
     }
 
     fn normal_button<'a>(
@@ -866,9 +894,10 @@ impl SkillTrackApp {
                 Message::CategoryPicked
             )
             .placeholder("Select category")
-            .width(Length::Fixed(280.0)),
+            .width(Length::Fixed(380.0)),
             self.normal_button("+", Message::ToggleNewCategoryInput),
         ]
+        .width(Length::Fixed(420.0))
         .spacing(8)
         .align_y(Alignment::Center);
 
@@ -877,10 +906,11 @@ impl SkillTrackApp {
                 text_input("New category", &self.new_category_name)
                     .on_input(Message::NewCategoryChanged)
                     .padding(8)
-                    .width(Length::Fixed(200.0)),
+                    .width(Length::Fixed(220.0)),
                 self.normal_button("Create", Message::AddCategory),
                 self.normal_button("Cancel", Message::CancelAddCategory),
             ]
+            .width(Length::Fixed(420.0))
             .spacing(8)
             .align_y(Alignment::Center)
         } else {
@@ -888,8 +918,14 @@ impl SkillTrackApp {
         };
 
         let timer_label = text(Self::format_hms(self.timer.elapsed_seconds())).size(52);
+        let start_label = if self.timer.status == TimerStatus::Paused {
+            "Resume"
+        } else {
+            "Start"
+        };
+
         let controls = row![
-            self.normal_button("Start", Message::StartPressed),
+            self.normal_button(start_label, Message::StartPressed),
             self.normal_button("Pause", Message::PausePressed),
             self.normal_button("Stop", Message::StopPressed),
         ]
@@ -899,23 +935,27 @@ impl SkillTrackApp {
         let notes_box = editor(&self.notes_content)
             .placeholder("Session notes")
             .on_action(Message::NotesEdited)
-            .height(Length::Fixed(220.0))
+            .height(Length::Fill)
             .padding(10);
 
         let page = column![
             text("Timer").size(34),
             category_row,
+            add_category_row,
             text_input("Session name (optional)", &self.timer.session_name)
                 .on_input(Message::SessionNameChanged)
                 .padding(8)
-                .width(Length::Fixed(380.0)),
-            add_category_row,
+                .width(Length::Fixed(420.0)),
             timer_label,
             controls,
-            container(notes_box).width(Length::Fixed(620.0)),
+            container(notes_box)
+                .width(Length::Fill)
+                .max_width(980)
+                .height(Length::Fill),
         ]
         .spacing(14)
         .align_x(Alignment::Center)
+        .height(Length::Fill)
         .width(Length::Fill);
 
         self.page_container(page)
@@ -926,24 +966,48 @@ impl SkillTrackApp {
             .spacing(12)
             .align_x(Alignment::Center);
 
-        for category in &self.categories {
-            let seconds = self.current_seconds_for_category(category.id);
-            let xp = crate::xp::seconds_to_xp(seconds);
-            let (level, progress, needed) = crate::xp::level_for_xp(xp);
+        let mut ranked_categories: Vec<(&Category, i64, i64, i64, i64)> = self
+            .categories
+            .iter()
+            .map(|category| {
+                let seconds = self.current_seconds_for_category(category.id);
+                let xp = crate::xp::seconds_to_xp(seconds);
+                let (level, progress, needed) = crate::xp::level_for_xp(xp);
+                (category, seconds, level, progress, needed)
+            })
+            .collect();
+
+        ranked_categories.sort_by(|a, b| {
+            b.2.cmp(&a.2)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| b.3.cmp(&a.3))
+        });
+
+        for (category, seconds, level, progress, needed) in ranked_categories {
             let fraction = if needed > 0 {
                 progress as f32 / needed as f32
             } else {
                 0.0
             };
 
+            let mut header_row = row![
+                text(format!("{} (Lv {})", category.name, level)),
+                text(Self::format_hms(seconds)),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center);
+
+            if self.confirm_delete_category_id == Some(category.id) {
+                header_row = header_row
+                    .push(self.normal_button("Confirm", Message::ConfirmDeleteCategory(category.id)))
+                    .push(self.normal_button("Cancel", Message::CancelDeleteCategory));
+            } else {
+                header_row =
+                    header_row.push(self.danger_button("Delete", Message::RequestDeleteCategory(category.id)));
+            }
+
             let row_item = column![
-                row![
-                    text(format!("{} (Lv {})", category.name, level)),
-                    text(Self::format_hms(seconds)),
-                    self.danger_button("Delete", Message::DeleteCategory(category.id)),
-                ]
-                .spacing(12)
-                .align_y(Alignment::Center),
+                header_row,
                 progress_bar(0.0..=1.0, fraction).width(Length::Fill),
             ]
             .spacing(8)
@@ -952,7 +1016,105 @@ impl SkillTrackApp {
             items = items.push(container(row_item).width(Length::Fill).padding(10));
         }
 
-        self.page_container(scrollable(items))
+        let stats_panel = self.page_container(scrollable(items));
+        let (longest_time, longest_detail) = self.longest_session_parts();
+        let extra_stats = container(
+            column![self.stat_badge(longest_time, longest_detail)]
+                .align_x(Alignment::Start)
+                .width(Length::Fill),
+        )
+        .width(Length::Fill)
+        .max_width(1280)
+        .padding([4, 16]);
+
+        column![stats_panel, extra_stats]
+            .spacing(10)
+            .width(Length::Fill)
+            .into()
+    }
+
+    fn longest_session_parts(&self) -> (String, String) {
+        if let Some(session) = self
+            .sessions
+            .iter()
+            .max_by_key(|session| session.duration_seconds)
+        {
+            let date = parse_rfc3339_date(session.started_at.as_str())
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "unknown-date".to_string());
+            let name = if session.session_name.trim().is_empty() {
+                "(no session name)"
+            } else {
+                session.session_name.as_str()
+            };
+
+            let name_chars = name.chars().count();
+            let short_name = if name_chars > 24 {
+                let clipped: String = name.chars().take(24).collect();
+                format!("{clipped}...")
+            } else {
+                name.to_string()
+            };
+            (
+                Self::format_hms(session.duration_seconds),
+                format!(
+                    "{} - {}",
+                    parse_rfc3339_date(session.started_at.as_str())
+                        .map(|d| d.format("%d/%m/%y").to_string())
+                        .unwrap_or(date),
+                    short_name
+                ),
+            )
+        } else {
+            ("--:--:--".to_string(), "no sessions yet".to_string())
+        }
+    }
+
+    fn stat_badge<'a>(&self, longest_time: String, longest_detail: String) -> iced::widget::Button<'a, Message> {
+        let mut time_text = text(longest_time).size(38);
+        if let Some(colors) = self.active_colors() {
+            time_text = time_text.color(colors.primary);
+        }
+
+        let badge_content = column![
+            text("Longest session").size(18),
+            time_text,
+            text(longest_detail).size(16),
+        ]
+        .align_x(Alignment::Center)
+        .spacing(6);
+
+        let mut badge = button(
+            container(badge_content)
+                .width(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        )
+        .width(Length::Fixed(260.0))
+        .height(Length::Fixed(140.0))
+        .padding([8, 10]);
+        if let Some(colors) = self.active_colors() {
+            badge = badge.style(move |_, _| iced::widget::button::Style {
+                background: Some(iced::Background::Color(Color::from_rgba(
+                    colors.secondary.r,
+                    colors.secondary.g,
+                    colors.secondary.b,
+                    0.28,
+                ))),
+                text_color: colors.on_surface,
+                border: iced::Border {
+                    color: colors.outline,
+                    width: 2.0,
+                    radius: 12.0.into(),
+                },
+                shadow: iced::Shadow {
+                    color: Color::from_rgba(colors.outline.r, colors.outline.g, colors.outline.b, 0.35),
+                    offset: iced::Vector::new(0.0, 3.0),
+                    blur_radius: 8.0,
+                },
+            });
+        }
+        badge
     }
 
     fn view_history_page(&self) -> Element<'_, Message> {
