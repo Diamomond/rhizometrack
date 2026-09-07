@@ -12,6 +12,7 @@ rhizometrack is an offline Rust app to track learning time per self-created cate
 
 - Timer with start/resume, pause, and stop
 - Category tracking with XP and levels
+- Stats page to keep you motivated long term
 - Editable and exportable history notes with auto-save
 - Calendar with marker for days with sessions
 - Import and export of data
