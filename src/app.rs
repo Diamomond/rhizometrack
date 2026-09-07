@@ -1,10 +1,10 @@
-use chrono::{DateTime, Datelike, Local, NaiveDate};
+use chrono::{DateTime, Datelike, Local, NaiveDate, Timelike};
 use iced::theme::Palette;
 use iced::time;
 use iced::widget::text_editor;
 use iced::widget::{
     button, column, container, pick_list, progress_bar, row, scrollable, text,
-    text_editor as editor, text_input,
+    text_editor as editor, text_input, Space,
 };
 use iced::{Alignment, Color, Element, Length, Subscription, Task, Theme, window};
 use std::collections::{HashMap, HashSet};
@@ -83,6 +83,27 @@ impl Display for CategoryChoice {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionCountChoice {
+    Overall,
+    Category(i64, String),
+}
+
+impl Display for SessionCountChoice {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionCountChoice::Overall => write!(f, "Overall"),
+            SessionCountChoice::Category(_, name) => write!(f, "{}", name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivityView {
+    Hours,
+    Days,
+}
+
 #[derive(Debug)]
 struct TimerSession {
     session_id: Option<i64>,
@@ -138,11 +159,21 @@ impl TimerSession {
     }
 }
 
+#[derive(Debug)]
+struct XpCelebration {
+    text: String,
+    started: Instant,
+}
+
 #[derive(Debug, Clone)]
 enum Message {
     ChangePage(Page),
     Tick,
+    AnimationTick,
     CategoryPicked(CategoryChoice),
+    StatCategoryPicked(CategoryChoice),
+    SessionCountPicked(SessionCountChoice),
+    ActivityViewChanged(ActivityView),
     ToggleNewCategoryInput,
     CancelAddCategory,
     NewCategoryChanged(String),
@@ -167,6 +198,7 @@ enum Message {
     ThemeChanged(ThemePreference),
     PickExportPath,
     PickImportPath,
+    PickNotesExportPath,
 }
 
 #[derive(Clone, Copy)]
@@ -223,22 +255,31 @@ pub struct SkillTrackApp {
     sessions: Vec<Session>,
     totals: HashMap<i64, i64>,
     selected_category_id: Option<i64>,
+    stat_category_id: Option<i64>,
+    session_count_filter: SessionCountChoice,
+    activity_view: ActivityView,
     selected_date: NaiveDate,
     expanded_notes: HashSet<i64>,
     new_category_name: String,
     show_new_category_input: bool,
     confirm_delete_category_id: Option<i64>,
     timer: TimerSession,
+    xp_celebration: Option<XpCelebration>,
     notes_content: text_editor::Content,
     history_notes: HashMap<i64, text_editor::Content>,
     dirty_history_notes: HashSet<i64>,
     theme_preference: ThemePreference,
     export_path: String,
+    notes_export_path: String,
     import_path: String,
     status_message: Option<String>,
 }
 
 impl SkillTrackApp {
+    const BADGE_HEIGHT: f32 = 152.0;
+    const BADGE_SPACING: f32 = 16.0;
+    const CELEBRATION_DURATION_MS: u128 = 1400;
+
     fn new(repo: SqliteRepository) -> (Self, Task<Message>) {
         let mut app = Self {
             repo,
@@ -247,17 +288,22 @@ impl SkillTrackApp {
             sessions: Vec::new(),
             totals: HashMap::new(),
             selected_category_id: None,
+            stat_category_id: None,
+            session_count_filter: SessionCountChoice::Overall,
+            activity_view: ActivityView::Hours,
             selected_date: Local::now().date_naive(),
             expanded_notes: HashSet::new(),
             new_category_name: String::new(),
             show_new_category_input: false,
             confirm_delete_category_id: None,
             timer: TimerSession::default(),
+            xp_celebration: None,
             notes_content: text_editor::Content::new(),
             history_notes: HashMap::new(),
             dirty_history_notes: HashSet::new(),
             theme_preference: ThemePreference::System,
             export_path: String::new(),
+            notes_export_path: String::new(),
             import_path: String::new(),
             status_message: None,
         };
@@ -412,6 +458,70 @@ impl SkillTrackApp {
         format!("{h:02}:{m:02}:{s:02}")
     }
 
+    fn format_hm(seconds: i64) -> String {
+        let total_minutes = (seconds.max(0) + 59) / 60;
+        let h = total_minutes / 60;
+        let m = total_minutes % 60;
+        format!("{h:02}:{m:02}")
+    }
+
+    fn export_notes_markdown(&self) -> String {
+        let mut entries: Vec<(NaiveDate, &str, &str)> = self
+            .sessions
+            .iter()
+            .filter_map(|session| {
+                let note = session.note_markdown.trim();
+                if note.is_empty() {
+                    return None;
+                }
+                let date = parse_rfc3339_date(session.started_at.as_str())?;
+                Some((date, session.session_name.trim(), note))
+            })
+            .collect();
+
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let separator = "-".repeat(40);
+        let mut output = String::new();
+        for (index, (date, name, note)) in entries.into_iter().enumerate() {
+            if index > 0 {
+                output.push_str(&separator);
+                output.push('\n');
+            }
+            let header = if name.is_empty() {
+                date.format("%Y-%m-%d").to_string()
+            } else {
+                format!("{} — {}", date.format("%Y-%m-%d"), name)
+            };
+            output.push_str(&header);
+            output.push('\n');
+            output.push_str(note);
+            output.push('\n');
+        }
+        output
+    }
+
+    fn seconds_until_next_level(
+        &self,
+        current_seconds: i64,
+        xp: i64,
+        progress: i64,
+        needed: i64,
+    ) -> Option<i64> {
+        if needed <= 0 {
+            return None;
+        }
+        let remaining_xp = needed - progress;
+        if remaining_xp <= 0 {
+            return Some(0);
+        }
+        // xp.rs: seconds_to_xp(seconds) = seconds / 60 (1 XP per full minute).
+        // Reaching `target_xp` requires at least `target_xp * 60` total seconds.
+        let target_xp = xp + remaining_xp;
+        let target_seconds = target_xp * 60;
+        Some((target_seconds - current_seconds).max(0))
+    }
+
     fn category_name(&self, id: i64) -> String {
         self.categories
             .iter()
@@ -555,6 +665,17 @@ impl SkillTrackApp {
                 self.set_error("Failed to finish session", &err);
                 return;
             }
+
+            if let Some(category_id) = self.timer.category_id {
+                let total_seconds = self.current_seconds_for_category(category_id);
+                let earned_xp = crate::xp::seconds_to_xp(duration);
+                let total_xp = crate::xp::seconds_to_xp(total_seconds);
+                let (level, _, _) = crate::xp::level_for_xp(total_xp);
+                self.xp_celebration = Some(XpCelebration {
+                    text: format!("+{earned_xp} XP earned · Lv {level}"),
+                    started: Instant::now(),
+                });
+            }
         }
 
         self.timer.reset();
@@ -574,7 +695,23 @@ impl SkillTrackApp {
             Message::Tick => {
                 self.flush_history_note_saves();
             }
+            Message::AnimationTick => {
+                if let Some(celebration) = &self.xp_celebration {
+                    if celebration.started.elapsed().as_millis() >= Self::CELEBRATION_DURATION_MS {
+                        self.xp_celebration = None;
+                    }
+                }
+            }
             Message::CategoryPicked(choice) => self.switch_active_category(choice.id),
+            Message::StatCategoryPicked(choice) => {
+                self.stat_category_id = Some(choice.id);
+            }
+            Message::SessionCountPicked(choice) => {
+                self.session_count_filter = choice;
+            }
+            Message::ActivityViewChanged(view) => {
+                self.activity_view = view;
+            }
             Message::ToggleNewCategoryInput => {
                 self.show_new_category_input = true;
             }
@@ -740,13 +877,31 @@ impl SkillTrackApp {
                     }
                 }
             }
+            Message::PickNotesExportPath => {
+                let selection = rfd::FileDialog::new()
+                    .set_file_name("notes-export.md")
+                    .add_filter("Markdown", &["md"])
+                    .save_file();
+                if let Some(path) = selection {
+                    self.notes_export_path = path.display().to_string();
+                    let markdown = self.export_notes_markdown();
+                    match std::fs::write(&self.notes_export_path, markdown) {
+                        Ok(()) => self.set_info("Notes export completed."),
+                        Err(err) => self.set_error("Failed to write notes export file", &err),
+                    }
+                }
+            }
         }
 
         Task::none()
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        time::every(Duration::from_millis(500)).map(|_| Message::Tick)
+        let mut subs = vec![time::every(Duration::from_millis(500)).map(|_| Message::Tick)];
+        if self.xp_celebration.is_some() {
+            subs.push(time::every(Duration::from_millis(33)).map(|_| Message::AnimationTick));
+        }
+        Subscription::batch(subs)
     }
 
     fn theme(&self) -> Theme {
@@ -850,6 +1005,39 @@ impl SkillTrackApp {
         btn
     }
 
+    fn toggle_button<'a>(
+        &self,
+        label: &'a str,
+        active: bool,
+        message: Message,
+    ) -> iced::widget::Button<'a, Message> {
+        let mut btn = button(label).on_press(message);
+        if let Some(colors) = self.active_colors() {
+            btn = btn.style(move |_, status| {
+                let (background, text_color) = if active {
+                    (colors.primary, colors.on_primary)
+                } else {
+                    (colors.surface_variant, colors.on_surface)
+                };
+                let mut style = iced::widget::button::Style {
+                    background: Some(iced::Background::Color(background)),
+                    text_color,
+                    border: iced::Border {
+                        color: colors.outline,
+                        width: 1.0,
+                        radius: 8.0.into(),
+                    },
+                    shadow: iced::Shadow::default(),
+                };
+                if !active && matches!(status, iced::widget::button::Status::Hovered) {
+                    style.background = Some(iced::Background::Color(colors.hover));
+                }
+                style
+            });
+        }
+        btn
+    }
+
     fn view(&self) -> Element<'_, Message> {
         let nav = row![
             self.normal_button("Timer", Message::ChangePage(Page::Timer)),
@@ -924,6 +1112,79 @@ impl SkillTrackApp {
             "Start"
         };
 
+        let fancy_font = iced::Font {
+            weight: iced::font::Weight::Bold,
+            ..iced::Font::default()
+        };
+
+        let xp_status_line: Element<'_, Message> = if let Some(celebration) = &self.xp_celebration {
+            let elapsed_ms = celebration
+                .started
+                .elapsed()
+                .as_millis()
+                .min(Self::CELEBRATION_DURATION_MS);
+            let progress = elapsed_ms as f32 / Self::CELEBRATION_DURATION_MS as f32;
+            let alpha = (1.0 - progress).max(0.0);
+            let max_rise = 22.0;
+            let top_padding = (max_rise * (1.0 - progress)).max(0.0);
+
+            let mut celebration_text = text(celebration.text.clone()).size(22).font(fancy_font);
+            if let Some(colors) = self.active_colors() {
+                celebration_text = celebration_text.color(Color::from_rgba(
+                    colors.tertiary.r,
+                    colors.tertiary.g,
+                    colors.tertiary.b,
+                    alpha,
+                ));
+            }
+
+            container(celebration_text)
+                .height(Length::Fixed(40.0))
+                .padding(iced::Padding {
+                    top: top_padding,
+                    bottom: 0.0,
+                    left: 0.0,
+                    right: 0.0,
+                })
+                .into()
+        } else if self.timer.status != TimerStatus::Stopped {
+            if let Some(category_id) = self.timer.category_id {
+                let live_seconds = self.current_seconds_for_category(category_id);
+                let xp = crate::xp::seconds_to_xp(live_seconds);
+                let (level, progress, needed) = crate::xp::level_for_xp(xp);
+                let next_level_label =
+                    match self.seconds_until_next_level(live_seconds, xp, progress, needed) {
+                        Some(remaining) => format!("{} to next level", Self::format_hm(remaining)),
+                        None => "—".to_string(),
+                    };
+
+                let mut xp_text = text(format!("{xp} XP · Lv {level}"))
+                    .size(20)
+                    .font(fancy_font);
+                let mut next_text = text(next_level_label).size(15);
+                if let Some(colors) = self.active_colors() {
+                    xp_text = xp_text.color(colors.error);
+                    next_text = next_text.color(colors.secondary);
+                }
+
+                container(
+                    row![xp_text, next_text]
+                        .spacing(16)
+                        .align_y(Alignment::Center),
+                )
+                .height(Length::Fixed(40.0))
+                .into()
+            } else {
+                container(Space::new(Length::Shrink, Length::Shrink))
+                    .height(Length::Fixed(40.0))
+                    .into()
+            }
+        } else {
+            container(Space::new(Length::Shrink, Length::Shrink))
+                .height(Length::Fixed(40.0))
+                .into()
+        };
+
         let controls = row![
             self.normal_button(start_label, Message::StartPressed),
             self.normal_button("Pause", Message::PausePressed),
@@ -947,6 +1208,7 @@ impl SkillTrackApp {
                 .padding(8)
                 .width(Length::Fixed(420.0)),
             timer_label,
+            xp_status_line,
             controls,
             container(notes_box)
                 .width(Length::Fill)
@@ -965,6 +1227,51 @@ impl SkillTrackApp {
         let mut items = column![text("Stats").size(34)]
             .spacing(12)
             .align_x(Alignment::Center);
+
+        let overall_seconds: i64 = self
+            .categories
+            .iter()
+            .map(|category| self.current_seconds_for_category(category.id))
+            .sum();
+        let overall_xp = crate::xp::seconds_to_xp(overall_seconds);
+        let (overall_level, overall_progress, overall_needed) = crate::xp::level_for_xp(overall_xp);
+        let overall_fraction = if overall_needed > 0 {
+            overall_progress as f32 / overall_needed as f32
+        } else {
+            0.0
+        };
+        let overall_next_label = match self.seconds_until_next_level(
+            overall_seconds,
+            overall_xp,
+            overall_progress,
+            overall_needed,
+        ) {
+            Some(remaining) => format!("{} to next level", Self::format_hm(remaining)),
+            None => "—".to_string(),
+        };
+
+        let mut rhizome_name_text = text(format!("The Rhizome (Lv {})", overall_level)).size(22);
+        let mut rhizome_time_text = text(Self::format_hms(overall_seconds)).size(17);
+        let mut rhizome_next_text = text(overall_next_label).size(15);
+        if let Some(colors) = self.active_colors() {
+            rhizome_name_text = rhizome_name_text.color(colors.primary);
+            rhizome_time_text = rhizome_time_text.color(colors.primary);
+            rhizome_next_text = rhizome_next_text.color(colors.secondary);
+        }
+
+        let rhizome_header = row![rhizome_name_text, rhizome_time_text, rhizome_next_text]
+            .spacing(12)
+            .align_y(Alignment::Center);
+
+        let rhizome_item = column![
+            rhizome_header,
+            progress_bar(0.0..=1.0, overall_fraction).width(Length::Fill),
+        ]
+        .spacing(8)
+        .align_x(Alignment::Center);
+
+        items = items.push(container(rhizome_item).width(Length::Fill).padding(10));
+        items = items.push(Space::with_height(Length::Fixed(28.0)));
 
         let mut ranked_categories: Vec<(&Category, i64, i64, i64, i64)> = self
             .categories
@@ -990,9 +1297,16 @@ impl SkillTrackApp {
                 0.0
             };
 
+            let xp = crate::xp::seconds_to_xp(seconds);
+            let next_level_label = match self.seconds_until_next_level(seconds, xp, progress, needed) {
+                Some(remaining) => format!("{} to next level", Self::format_hm(remaining)),
+                None => "—".to_string(),
+            };
+
             let mut header_row = row![
                 text(format!("{} (Lv {})", category.name, level)),
                 text(Self::format_hms(seconds)),
+                text(next_level_label),
             ]
             .spacing(12)
             .align_y(Alignment::Center);
@@ -1016,27 +1330,88 @@ impl SkillTrackApp {
             items = items.push(container(row_item).width(Length::Fill).padding(10));
         }
 
-        let stats_panel = self.page_container(scrollable(items));
-        let (longest_time, longest_detail) = self.longest_session_parts();
+        let stats_panel = self.page_container(items);
+
+        let (overall_time, overall_detail) = self.longest_session_parts();
+        let (category_time, category_detail) = self.longest_session_parts_for(self.stat_category_id);
+
+        let badges = row![
+            self.stat_badge(overall_time, overall_detail),
+            self.stat_badge_by_category(
+                category_time,
+                category_detail,
+                self.category_choices(),
+                self.selected_stat_category_choice(),
+            ),
+            self.stat_badge_session_count(),
+            self.stat_badge_streak(),
+        ]
+        .spacing(Self::BADGE_SPACING)
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+
+        let activity_panel = self.activity_chart();
+
         let extra_stats = container(
-            column![self.stat_badge(longest_time, longest_detail)]
-                .align_x(Alignment::Start)
+            column![badges, activity_panel]
+                .spacing(16)
+                .align_x(Alignment::Center)
                 .width(Length::Fill),
         )
         .width(Length::Fill)
+        .center_x(Length::Fill)
         .max_width(1280)
         .padding([4, 16]);
 
-        column![stats_panel, extra_stats]
+        let page_content = column![stats_panel, extra_stats]
             .spacing(10)
             .width(Length::Fill)
-            .into()
+            .align_x(Alignment::Center);
+
+        scrollable(page_content).width(Length::Fill).into()
+    }
+
+    fn selected_stat_category_choice(&self) -> Option<CategoryChoice> {
+        let selected = self.stat_category_id?;
+        self.categories
+            .iter()
+            .find(|cat| cat.id == selected)
+            .map(|cat| CategoryChoice {
+                id: cat.id,
+                name: cat.name.clone(),
+            })
+    }
+
+    fn session_count_choices(&self) -> Vec<SessionCountChoice> {
+        let mut choices = vec![SessionCountChoice::Overall];
+        choices.extend(
+            self.categories
+                .iter()
+                .map(|cat| SessionCountChoice::Category(cat.id, cat.name.clone())),
+        );
+        choices
+    }
+
+    fn session_count_for(&self, choice: &SessionCountChoice) -> usize {
+        match choice {
+            SessionCountChoice::Overall => self.sessions.len(),
+            SessionCountChoice::Category(id, _) => self
+                .sessions
+                .iter()
+                .filter(|session| session.category_id == *id)
+                .count(),
+        }
     }
 
     fn longest_session_parts(&self) -> (String, String) {
+        self.longest_session_parts_for(None)
+    }
+
+    fn longest_session_parts_for(&self, category_id: Option<i64>) -> (String, String) {
         if let Some(session) = self
             .sessions
             .iter()
+            .filter(|session| category_id.is_none_or(|id| session.category_id == id))
             .max_by_key(|session| session.duration_seconds)
         {
             let date = parse_rfc3339_date(session.started_at.as_str())
@@ -1070,10 +1445,41 @@ impl SkillTrackApp {
         }
     }
 
-    fn stat_badge<'a>(&self, longest_time: String, longest_detail: String) -> iced::widget::Button<'a, Message> {
+    fn badge_container<'a>(
+        &self,
+        content: impl Into<Element<'a, Message>>,
+    ) -> iced::widget::Container<'a, Message> {
+        let mut badge = container(content)
+            .width(Length::Fill)
+            .height(Length::Fixed(Self::BADGE_HEIGHT))
+            .padding([8, 10])
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center);
+
+        if let Some(colors) = self.active_colors() {
+            badge = badge.style(move |_| {
+                container::Style::default()
+                    .background(Color::from_rgba(
+                        colors.tertiary.r,
+                        colors.tertiary.g,
+                        colors.tertiary.b,
+                        0.24,
+                    ))
+                    .color(colors.on_surface)
+                    .border(iced::Border {
+                        color: colors.outline,
+                        width: 2.0,
+                        radius: 12.0.into(),
+                    })
+            });
+        }
+        badge
+    }
+
+    fn stat_badge<'a>(&self, longest_time: String, longest_detail: String) -> Element<'a, Message> {
         let mut time_text = text(longest_time).size(38);
         if let Some(colors) = self.active_colors() {
-            time_text = time_text.color(colors.primary);
+            time_text = time_text.color(colors.tertiary);
         }
 
         let badge_content = column![
@@ -1084,38 +1490,279 @@ impl SkillTrackApp {
         .align_x(Alignment::Center)
         .spacing(6);
 
-        let mut badge = button(
-            container(badge_content)
-                .width(Length::Fill)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill),
-        )
-        .width(Length::Fixed(260.0))
-        .height(Length::Fixed(140.0))
-        .padding([8, 10]);
+        self.badge_container(badge_content).into()
+    }
+
+    fn stat_badge_by_category<'a>(
+        &self,
+        longest_time: String,
+        longest_detail: String,
+        category_choices: Vec<CategoryChoice>,
+        selected_choice: Option<CategoryChoice>,
+    ) -> Element<'a, Message> {
+        let mut time_text = text(longest_time).size(38);
         if let Some(colors) = self.active_colors() {
-            badge = badge.style(move |_, _| iced::widget::button::Style {
-                background: Some(iced::Background::Color(Color::from_rgba(
-                    colors.secondary.r,
-                    colors.secondary.g,
-                    colors.secondary.b,
-                    0.28,
-                ))),
-                text_color: colors.on_surface,
-                border: iced::Border {
-                    color: colors.outline,
-                    width: 2.0,
-                    radius: 12.0.into(),
-                },
-                shadow: iced::Shadow {
-                    color: Color::from_rgba(colors.outline.r, colors.outline.g, colors.outline.b, 0.35),
-                    offset: iced::Vector::new(0.0, 3.0),
-                    blur_radius: 8.0,
-                },
+            time_text = time_text.color(colors.tertiary);
+        }
+
+        let category_picker = pick_list(
+            category_choices,
+            selected_choice,
+            Message::StatCategoryPicked,
+        )
+        .placeholder("By category")
+        .width(Length::Fixed(160.0));
+
+        let badge_content = column![
+            text("Longest session (category)").size(18),
+            category_picker,
+            time_text,
+            text(longest_detail).size(16),
+        ]
+        .align_x(Alignment::Center)
+        .spacing(6);
+
+        self.badge_container(badge_content).into()
+    }
+
+    fn stat_badge_session_count<'a>(&self) -> Element<'a, Message> {
+        let count = self.session_count_for(&self.session_count_filter);
+
+        let mut count_text = text(count.to_string()).size(38);
+        if let Some(colors) = self.active_colors() {
+            count_text = count_text.color(colors.tertiary);
+        }
+
+        let count_picker = pick_list(
+            self.session_count_choices(),
+            Some(self.session_count_filter.clone()),
+            Message::SessionCountPicked,
+        )
+        .width(Length::Fixed(160.0));
+
+        let badge_content = column![
+            text("Sessions finished").size(18),
+            count_picker,
+            count_text,
+            text("sessions").size(16),
+        ]
+        .align_x(Alignment::Center)
+        .spacing(6);
+
+        self.badge_container(badge_content).into()
+    }
+
+    fn current_streak_days(&self) -> i64 {
+        let mut active_dates: HashSet<NaiveDate> = HashSet::new();
+        for session in &self.sessions {
+            if let Some(date) = parse_rfc3339_date(session.started_at.as_str()) {
+                active_dates.insert(date);
+            }
+        }
+
+        let today = Local::now().date_naive();
+        let yesterday = today - chrono::Duration::days(1);
+
+        let mut cursor = if active_dates.contains(&today) {
+            today
+        } else if active_dates.contains(&yesterday) {
+            yesterday
+        } else {
+            return 0;
+        };
+
+        let mut streak = 0i64;
+        while active_dates.contains(&cursor) {
+            streak += 1;
+            cursor -= chrono::Duration::days(1);
+        }
+        streak
+    }
+
+    fn streak_color(&self, streak: i64, colors: AppColors) -> Color {
+        match streak {
+            0 => colors.outline,
+            1..=2 => colors.on_surface,
+            3..=6 => colors.secondary,
+            7..=13 => colors.tertiary,
+            _ => colors.primary,
+        }
+    }
+
+    fn stat_badge_streak<'a>(&self) -> Element<'a, Message> {
+        let streak = self.current_streak_days();
+
+        let mut streak_text = text(streak.to_string()).size(38);
+        if let Some(colors) = self.active_colors() {
+            streak_text = streak_text.color(self.streak_color(streak, colors));
+        }
+
+        let subtitle = if streak == 1 {
+            "day in a row"
+        } else {
+            "days in a row"
+        };
+
+        let badge_content = column![
+            text("Daily streak").size(18),
+            streak_text,
+            text(subtitle).size(16),
+        ]
+        .align_x(Alignment::Center)
+        .spacing(6);
+
+        self.badge_container(badge_content).into()
+    }
+
+    fn activity_buckets(&self) -> (Vec<String>, Vec<i64>) {
+        match self.activity_view {
+            ActivityView::Hours => {
+                let mut buckets = vec![0i64; 24];
+                for session in &self.sessions {
+                    if let Ok(dt) = DateTime::parse_from_rfc3339(session.started_at.as_str()) {
+                        let hour = dt.hour() as usize;
+                        buckets[hour] += session.duration_seconds;
+                    }
+                }
+                let labels = (0..24)
+                    .map(|h| if h % 3 == 0 { h.to_string() } else { String::new() })
+                    .collect();
+                (labels, buckets)
+            }
+            ActivityView::Days => {
+                let mut buckets = vec![0i64; 7];
+                for session in &self.sessions {
+                    if let Some(date) = parse_rfc3339_date(session.started_at.as_str()) {
+                        let idx = date.weekday().num_days_from_monday() as usize;
+                        buckets[idx] += session.duration_seconds;
+                    }
+                }
+                let labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect();
+                (labels, buckets)
+            }
+        }
+    }
+
+    fn activity_chart<'a>(&self) -> Element<'a, Message> {
+        const CHART_HEIGHT: f32 = 170.0;
+        const BAR_GAP: f32 = 4.0;
+        const AXIS_WIDTH: f32 = 44.0;
+
+        let (labels, values) = self.activity_buckets();
+        let max_value = values.iter().copied().max().unwrap_or(0).max(1);
+
+        let mut chart_row = row![].spacing(BAR_GAP).width(Length::Fill);
+        for (value, label) in values.into_iter().zip(labels.into_iter()) {
+            let fraction = value as f32 / max_value as f32;
+            let bar_height = (fraction * CHART_HEIGHT).max(2.0);
+            let spacer_height = (CHART_HEIGHT - bar_height).max(0.0);
+
+            let mut bar = container(Space::new(Length::Fill, Length::Fill))
+                .width(Length::Fill)
+                .height(Length::Fixed(bar_height));
+            if let Some(colors) = self.active_colors() {
+                bar = bar.style(move |_| {
+                    container::Style::default()
+                        .background(colors.primary)
+                        .border(iced::Border {
+                            color: colors.primary,
+                            width: 0.0,
+                            radius: 3.0.into(),
+                        })
+                });
+            }
+
+            let bar_col = column![
+                Space::with_height(Length::Fixed(spacer_height)),
+                bar,
+                text(label).size(10),
+            ]
+            .align_x(Alignment::Center)
+            .spacing(4)
+            .width(Length::Fill);
+
+            chart_row = chart_row.push(bar_col);
+        }
+
+        // Y-axis reference ticks: max value at top, midpoint, and zero at the
+        // bottom of the bar area, plus a leading space matching the bar
+        // labels row below so the ticks line up with the bar tops/bottoms.
+        let mut max_tick = text(Self::format_hm(max_value)).size(10);
+        let mut mid_tick = text(Self::format_hm(max_value / 2)).size(10);
+        let mut zero_tick = text("0:00").size(10);
+        if let Some(colors) = self.active_colors() {
+            max_tick = max_tick.color(colors.on_surface);
+            mid_tick = mid_tick.color(colors.on_surface);
+            zero_tick = zero_tick.color(colors.on_surface);
+        }
+
+        let axis = column![
+            max_tick,
+            Space::with_height(Length::Fill),
+            mid_tick,
+            Space::with_height(Length::Fill),
+            zero_tick,
+            Space::with_height(Length::Fixed(24.0)),
+        ]
+        .height(Length::Fixed(CHART_HEIGHT + 24.0))
+        .width(Length::Fixed(AXIS_WIDTH))
+        .align_x(Alignment::End);
+
+        let chart_body = row![axis, chart_row].spacing(6).width(Length::Fill);
+
+        let toggle_row = row![
+            self.toggle_button(
+                "By hour",
+                self.activity_view == ActivityView::Hours,
+                Message::ActivityViewChanged(ActivityView::Hours),
+            ),
+            self.toggle_button(
+                "By day",
+                self.activity_view == ActivityView::Days,
+                Message::ActivityViewChanged(ActivityView::Days),
+            ),
+        ]
+        .spacing(8);
+
+        let header = row![
+            text("Most active").size(18),
+            Space::with_width(Length::Fill),
+            toggle_row,
+        ]
+        .align_y(Alignment::Center)
+        .width(Length::Fill);
+
+        let mut axis_caption = text("time tracked (H:M)").size(11);
+        if let Some(colors) = self.active_colors() {
+            axis_caption = axis_caption.color(colors.outline);
+        }
+
+        let panel_content = column![header, axis_caption, chart_body]
+            .spacing(8)
+            .width(Length::Fill);
+
+        let mut panel = container(panel_content)
+            .width(Length::Fill)
+            .padding(16);
+        if let Some(colors) = self.active_colors() {
+            panel = panel.style(move |_| {
+                container::Style::default()
+                    .background(colors.surface_variant)
+                    .color(colors.on_surface)
+                    .border(iced::Border {
+                        color: colors.outline,
+                        width: 1.0,
+                        radius: 12.0.into(),
+                    })
             });
         }
-        badge
+
+        panel.into()
     }
+
 
     fn view_history_page(&self) -> Element<'_, Message> {
         let mut items = column![
@@ -1322,7 +1969,7 @@ impl SkillTrackApp {
             });
         }
         btn
-    }
+    } 
 
     fn view_settings_page(&self) -> Element<'_, Message> {
         let theme_picker = pick_list(
@@ -1341,6 +1988,11 @@ impl SkillTrackApp {
         } else {
             self.import_path.clone()
         };
+        let notes_export_path = if self.notes_export_path.is_empty() {
+            "No notes export file selected".to_string()
+        } else {
+            self.notes_export_path.clone()
+        };
 
         let page = column![
             text("Settings").size(34),
@@ -1355,6 +2007,10 @@ impl SkillTrackApp {
                 .spacing(8)
                 .align_y(Alignment::Center),
             text(import_path),
+            row![self.normal_button("Export notes to Markdown", Message::PickNotesExportPath),]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            text(notes_export_path),
         ]
         .spacing(12)
         .align_x(Alignment::Center);
