@@ -103,3 +103,8 @@ cargo bundle --release
 - Linux: `$XDG_DATA_HOME/rhizometrack/rhizometrack.db`
 - Linux fallback: `~/.local/share/rhizometrack/rhizometrack.db`
 - macOS: `~/Library/Application Support/rhizometrack/rhizometrack.db`
+
+
+## inspiration
+
+[Sky's pomodoro study](https://github.com/SkohnBohn/Pomodoro-Gamification-Study-App)
