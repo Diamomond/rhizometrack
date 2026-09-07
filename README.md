@@ -1,46 +1,44 @@
 # rhizometrack
 
-rhizometrack is an offline Rust app.
-It tracks learning time by category.
-It uses SQLite for local data.
+rhizometrack is an offline Rust app to track learning time per self-created categories, it uses SQLite for local data
 
 | | |
 |:---:|:---:|
-| <img src="https://i.imgur.com/oXPDTJo.png" alt="timer page" width="100%"> | <img src="https://i.imgur.com/vzjxOcH.png" alt="stats page" width="100%"> |
-| <img src="https://i.imgur.com/jP808SC.png" alt="history page" width="100%"> | <img src="https://i.imgur.com/ipkvCZa.png" alt="settings page" width="100%"> |
+| <img src="https://github.com/Diamomond/rhizometrack/blob/main/src/screenshots/timer.png" alt="timer page" width="100%"> | <img src="https://github.com/Diamomond/rhizometrack/blob/main/src/screenshots/stats.png" alt="stats page" width="100%"> |
+| <img src="https://github.com/Diamomond/rhizometrack/blob/main/src/screenshots/notes.png" alt="notes page" width="100%"> | <img src="https://github.com/Diamomond/rhizometrack/blob/main/src/screenshots/calendar.png" alt="calendar page" width="100%"> |
+| <img src="https://github.com/Diamomond/rhizometrack/blob/main/src/screenshots/settings.png" alt="settings page" width="100%"> |
 
 ## Main features
 
-- Timer with start, pause, and stop
+- Timer with start/resume, pause, and stop
 - Category tracking with XP and levels
-- Editable history notes with auto-save
-- Calendar with month and year jump
-- Day marker in calendar for days with sessions
+- Editable and exportable history notes with auto-save
+- Calendar with marker for days with sessions
 - Import and export of data
 
 ## Build and run on Linux
 
 ### Option A: Nix flake
 
-1. Enter dev shell.
+1. Enter dev shell
 
 ```bash
 nix develop
 ```
 
-2. Run app.
+2. Run app
 
 ```bash
 cargo run
 ```
 
-3. Build package.
+3. Build package
 
 ```bash
 nix build .#rhizometrack
 ```
 
-4. Run package.
+4. Run package
 
 ```bash
 nix run .#rhizometrack
@@ -65,7 +63,7 @@ cargo run
 
 ## Build and run on macOS (Apple Silicon)
 
-This path needs Homebrew.
+This path needs Homebrew
 
 1. Install tools.
 
@@ -73,7 +71,7 @@ This path needs Homebrew.
 brew install rust pkg-config sqlite
 ```
 
-2. Build and run.
+2. Build and run
 
 ```bash
 cargo build
@@ -82,13 +80,13 @@ cargo run
 
 ## Build macOS app bundle
 
-1. Install bundler.
+1. Install bundler
 
 ```bash
 cargo install cargo-bundle
 ```
 
-2. Create bundle.
+2. Create bundle
 
 ```bash
 cargo bundle --release
