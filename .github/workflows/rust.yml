@@ -17,13 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
-        
+
       - name: Cache Rust Dependencies
         uses: Swatinem/rust-cache@v2
-        
+
       - name: Run tests
         run: cargo test
 
@@ -78,15 +78,15 @@ jobs:
         run: |
           if [[ "${{ matrix.os }}" == "macOS-latest" ]]; then
             cd target/${{ matrix.target }}/release/bundle/osx/
-            
-            zip -r $GITHUB_WORKSPACE/${{ matrix.asset_name }}.zip *.app
-            
-            echo "asset_path=${{ matrix.asset_name }}.zip" >> $GITHUB_OUTPUT
+
+            tar -czf $GITHUB_WORKSPACE/${{ matrix.asset_name }}.tar.gz *.app
+
+            echo "asset_path=${{ matrix.asset_name }}.tar.gz" >> $GITHUB_OUTPUT
           else
             cd target/${{ matrix.target }}/release/
-            
+
             mv ${{ matrix.artifact_name }} $GITHUB_WORKSPACE/${{ matrix.asset_name }}
-            
+
             echo "asset_path=${{ matrix.asset_name }}" >> $GITHUB_OUTPUT
           fi
 
