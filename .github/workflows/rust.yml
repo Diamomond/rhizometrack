@@ -9,6 +9,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
 
 jobs:
   test:
@@ -16,10 +17,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - name: Install Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
+        
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@v2
+        
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test
 
   release:
     name: Build & Release (${{ matrix.target }})
@@ -49,6 +55,9 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Cache Rust Dependencies
+        uses: Swatinem/rust-cache@v2
+
       - name: Install cargo-bundle (macOS only)
         if: matrix.os == 'macOS-latest'
         uses: taiki-e/install-action@v2
@@ -57,11 +66,11 @@ jobs:
 
       - name: Build Release (Linux)
         if: matrix.os == 'ubuntu-latest'
-        run: cargo build --release --target ${{ matrix.target }} --verbose
+        run: cargo build --release --target ${{ matrix.target }}
 
       - name: Build and Bundle Release (macOS)
         if: matrix.os == 'macOS-latest'
-        run: cargo bundle --release --target ${{ matrix.target }} --verbose
+        run: cargo bundle --release --target ${{ matrix.target }}
 
       - name: Prepare Binary Artifact
         id: prepare
