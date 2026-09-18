@@ -5,7 +5,7 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch: # Allows you to trigger manually from the Actions tab
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -25,8 +25,7 @@ jobs:
     name: Build & Release (${{ matrix.target }})
     needs: test
     runs-on: ${{ matrix.os }}
-    # Prevent pull requests from triggering a release
-    if: github.ref == 'refs/heads/main' 
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
 
@@ -38,9 +37,9 @@ jobs:
             artifact_name: rhizometrack
             asset_name: rhizometrack-linux-amd64
           - os: macOS-latest
-            target: x86_64-apple-darwin
+            target: aarch64-apple-darwin
             artifact_name: rhizometrack
-            asset_name: rhizometrack-macos-x86_64
+            asset_name: rhizometrack-macos-arm64
 
     steps:
       - uses: actions/checkout@v4
@@ -50,20 +49,43 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build Release Binary
+      - name: Install cargo-bundle (macOS only)
+        if: matrix.os == 'macOS-latest'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-bundle
+
+      - name: Build Release (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: cargo build --release --target ${{ matrix.target }} --verbose
 
+      - name: Build and Bundle Release (macOS)
+        if: matrix.os == 'macOS-latest'
+        run: cargo bundle --release --target ${{ matrix.target }} --verbose
+
       - name: Prepare Binary Artifact
+        id: prepare
         shell: bash
         run: |
-          cd target/${{ matrix.target }}/release
-          mv ${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+          if [[ "${{ matrix.os }}" == "macOS-latest" ]]; then
+            cd target/${{ matrix.target }}/release/bundle/osx/
+            
+            zip -r $GITHUB_WORKSPACE/${{ matrix.asset_name }}.zip *.app
+            
+            echo "asset_path=${{ matrix.asset_name }}.zip" >> $GITHUB_OUTPUT
+          else
+            cd target/${{ matrix.target }}/release/
+            
+            mv ${{ matrix.artifact_name }} $GITHUB_WORKSPACE/${{ matrix.asset_name }}
+            
+            echo "asset_path=${{ matrix.asset_name }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: newest # Hardcodes the tag so it never fails on a UI push
+          tag_name: newest
           name: Latest Main Build
-          files: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
+          files: ${{ steps.prepare.outputs.asset_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
