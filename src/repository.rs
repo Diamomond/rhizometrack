@@ -1,5 +1,5 @@
 use rusqlite::{Connection, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::{Category, ExportPackage};
 
@@ -122,11 +122,39 @@ impl Repository for SqliteRepository {
             old_to_new_id.insert(category.id, new_id);
         }
 
+        let mut existing_sessions = self
+            .all_sessions()?
+            .into_iter()
+            .map(|session| {
+                (
+                    session.category_id,
+                    session.session_name,
+                    session.started_at,
+                    session.ended_at,
+                    session.duration_seconds,
+                    session.note_markdown,
+                )
+            })
+            .collect::<HashSet<_>>();
+
         for session in data.sessions.into_iter() {
             let category_id = old_to_new_id
                 .get(&session.category_id)
                 .copied()
                 .unwrap_or(session.category_id);
+
+            let session_key = (
+                category_id,
+                session.session_name.clone(),
+                session.started_at.clone(),
+                session.ended_at.clone(),
+                session.duration_seconds,
+                session.note_markdown.clone(),
+            );
+            if !existing_sessions.insert(session_key) {
+                continue;
+            }
+
             let _ = self.insert_session_record(
                 category_id,
                 &session.session_name,
