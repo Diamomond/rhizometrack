@@ -3,8 +3,8 @@ use iced::theme::Palette;
 use iced::time;
 use iced::widget::text_editor;
 use iced::widget::{
-    button, column, container, pick_list, progress_bar, row, scrollable, text,
-    text_editor as editor, text_input, Space,
+    Space, button, column, container, pick_list, progress_bar, row, scrollable, text,
+    text_editor as editor, text_input,
 };
 use iced::{Alignment, Color, Element, Length, Subscription, Task, Theme, window};
 use std::collections::{HashMap, HashSet};
@@ -1298,10 +1298,11 @@ impl SkillTrackApp {
             };
 
             let xp = crate::xp::seconds_to_xp(seconds);
-            let next_level_label = match self.seconds_until_next_level(seconds, xp, progress, needed) {
-                Some(remaining) => format!("{} to next level", Self::format_hm(remaining)),
-                None => "—".to_string(),
-            };
+            let next_level_label =
+                match self.seconds_until_next_level(seconds, xp, progress, needed) {
+                    Some(remaining) => format!("{} to next level", Self::format_hm(remaining)),
+                    None => "—".to_string(),
+                };
 
             let mut header_row = row![
                 text(format!("{} (Lv {})", category.name, level)),
@@ -1313,11 +1314,14 @@ impl SkillTrackApp {
 
             if self.confirm_delete_category_id == Some(category.id) {
                 header_row = header_row
-                    .push(self.normal_button("Confirm", Message::ConfirmDeleteCategory(category.id)))
+                    .push(
+                        self.normal_button("Confirm", Message::ConfirmDeleteCategory(category.id)),
+                    )
                     .push(self.normal_button("Cancel", Message::CancelDeleteCategory));
             } else {
-                header_row =
-                    header_row.push(self.danger_button("Delete", Message::RequestDeleteCategory(category.id)));
+                header_row = header_row.push(
+                    self.danger_button("Delete", Message::RequestDeleteCategory(category.id)),
+                );
             }
 
             let row_item = column![
@@ -1333,7 +1337,8 @@ impl SkillTrackApp {
         let stats_panel = self.page_container(items);
 
         let (overall_time, overall_detail) = self.longest_session_parts();
-        let (category_time, category_detail) = self.longest_session_parts_for(self.stat_category_id);
+        let (category_time, category_detail) =
+            self.longest_session_parts_for(self.stat_category_id);
 
         let badges = row![
             self.stat_badge(overall_time, overall_detail),
@@ -1510,7 +1515,7 @@ impl SkillTrackApp {
             selected_choice,
             Message::StatCategoryPicked,
         )
-        .placeholder("By category")
+        .placeholder("category")
         .width(Length::Fixed(160.0));
 
         let badge_content = column![
@@ -1553,12 +1558,7 @@ impl SkillTrackApp {
     }
 
     fn current_streak_days(&self) -> i64 {
-        let mut active_dates: HashSet<NaiveDate> = HashSet::new();
-        for session in &self.sessions {
-            if let Some(date) = parse_rfc3339_date(session.started_at.as_str()) {
-                active_dates.insert(date);
-            }
-        }
+        let active_dates = self.active_dates();
 
         let today = Local::now().date_naive();
         let yesterday = today - chrono::Duration::days(1);
@@ -1579,6 +1579,34 @@ impl SkillTrackApp {
         streak
     }
 
+    fn highest_streak_days(&self) -> i64 {
+        let active_dates = self.active_dates();
+        let mut highest = 0i64;
+
+        for date in active_dates.iter().copied() {
+            if active_dates.contains(&(date - chrono::Duration::days(1))) {
+                continue;
+            }
+
+            let mut streak = 1i64;
+            let mut cursor = date + chrono::Duration::days(1);
+            while active_dates.contains(&cursor) {
+                streak += 1;
+                cursor += chrono::Duration::days(1);
+            }
+            highest = highest.max(streak);
+        }
+
+        highest
+    }
+
+    fn active_dates(&self) -> HashSet<NaiveDate> {
+        self.sessions
+            .iter()
+            .filter_map(|session| parse_rfc3339_date(session.started_at.as_str()))
+            .collect()
+    }
+
     fn streak_color(&self, streak: i64, colors: AppColors) -> Color {
         match streak {
             0 => colors.outline,
@@ -1591,6 +1619,7 @@ impl SkillTrackApp {
 
     fn stat_badge_streak<'a>(&self) -> Element<'a, Message> {
         let streak = self.current_streak_days();
+        let highest_streak = self.highest_streak_days();
 
         let mut streak_text = text(streak.to_string()).size(38);
         if let Some(colors) = self.active_colors() {
@@ -1607,6 +1636,11 @@ impl SkillTrackApp {
             text("Daily streak").size(18),
             streak_text,
             text(subtitle).size(16),
+            text(format!(
+                "Best ever: {highest_streak} day{}",
+                if highest_streak == 1 { "" } else { "s" }
+            ))
+            .size(14),
         ]
         .align_x(Alignment::Center)
         .spacing(6);
@@ -1625,21 +1659,27 @@ impl SkillTrackApp {
                     }
                 }
                 let labels = (0..24)
-                    .map(|h| if h % 3 == 0 { h.to_string() } else { String::new() })
+                    .map(|h| {
+                        if h % 3 == 0 {
+                            h.to_string()
+                        } else {
+                            String::new()
+                        }
+                    })
                     .collect();
                 (labels, buckets)
             }
             ActivityView::Days => {
                 let mut buckets = vec![0i64; 7];
                 for session in &self.sessions {
-                    if let Some(date) = parse_rfc3339_date(session.started_at.as_str()) {
-                        let idx = date.weekday().num_days_from_monday() as usize;
-                        buckets[idx] += session.duration_seconds;
+                    if let Ok(dt) = DateTime::parse_from_rfc3339(session.started_at.as_str()) {
+                        let weekday = dt.weekday().num_days_from_monday() as usize;
+                        buckets[weekday] += session.duration_seconds;
                     }
                 }
                 let labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-                    .into_iter()
-                    .map(String::from)
+                    .iter()
+                    .map(|label| (*label).to_string())
                     .collect();
                 (labels, buckets)
             }
@@ -1653,10 +1693,13 @@ impl SkillTrackApp {
 
         let (labels, values) = self.activity_buckets();
         let max_value = values.iter().copied().max().unwrap_or(0).max(1);
+        let max_minutes = (max_value + 59) / 60;
+        let axis_minutes = ((max_minutes.max(15) + 14) / 15) * 15;
+        let axis_max = axis_minutes * 60;
 
         let mut chart_row = row![].spacing(BAR_GAP).width(Length::Fill);
         for (value, label) in values.into_iter().zip(labels.into_iter()) {
-            let fraction = value as f32 / max_value as f32;
+            let fraction = value as f32 / axis_max as f32;
             let bar_height = (fraction * CHART_HEIGHT).max(2.0);
             let spacer_height = (CHART_HEIGHT - bar_height).max(0.0);
 
@@ -1690,8 +1733,8 @@ impl SkillTrackApp {
         // Y-axis reference ticks: max value at top, midpoint, and zero at the
         // bottom of the bar area, plus a leading space matching the bar
         // labels row below so the ticks line up with the bar tops/bottoms.
-        let mut max_tick = text(Self::format_hm(max_value)).size(10);
-        let mut mid_tick = text(Self::format_hm(max_value / 2)).size(10);
+        let mut max_tick = text(Self::format_hm(axis_max)).size(10);
+        let mut mid_tick = text(Self::format_hm(axis_max / 2)).size(10);
         let mut zero_tick = text("0:00").size(10);
         if let Some(colors) = self.active_colors() {
             max_tick = max_tick.color(colors.on_surface);
@@ -1735,7 +1778,7 @@ impl SkillTrackApp {
         .align_y(Alignment::Center)
         .width(Length::Fill);
 
-        let mut axis_caption = text("time tracked (H:M)").size(11);
+        let mut axis_caption = text("time tracked").size(11);
         if let Some(colors) = self.active_colors() {
             axis_caption = axis_caption.color(colors.outline);
         }
@@ -1744,9 +1787,7 @@ impl SkillTrackApp {
             .spacing(8)
             .width(Length::Fill);
 
-        let mut panel = container(panel_content)
-            .width(Length::Fill)
-            .padding(16);
+        let mut panel = container(panel_content).width(Length::Fill).padding(16);
         if let Some(colors) = self.active_colors() {
             panel = panel.style(move |_| {
                 container::Style::default()
@@ -1762,7 +1803,6 @@ impl SkillTrackApp {
 
         panel.into()
     }
-
 
     fn view_history_page(&self) -> Element<'_, Message> {
         let mut items = column![
@@ -1815,18 +1855,17 @@ impl SkillTrackApp {
 
             if show_notes {
                 if let Some(content) = self.history_notes.get(&session.id) {
-                    row_content = row_content
-                        .push(
-                            container(
-                                editor(content)
-                                    .on_action(move |action| {
-                                        Message::HistoryNotesEdited(session.id, action)
-                                    })
-                                    .height(Length::Fixed(160.0))
-                                    .padding(8),
-                            )
-                            .width(Length::Fixed(620.0)),
+                    row_content = row_content.push(
+                        container(
+                            editor(content)
+                                .on_action(move |action| {
+                                    Message::HistoryNotesEdited(session.id, action)
+                                })
+                                .height(Length::Fixed(160.0))
+                                .padding(8),
                         )
+                        .width(Length::Fixed(620.0)),
+                    )
                 } else {
                     row_content = row_content.push(text("Open notes again to edit."));
                 }
@@ -1969,7 +2008,7 @@ impl SkillTrackApp {
             });
         }
         btn
-    } 
+    }
 
     fn view_settings_page(&self) -> Element<'_, Message> {
         let theme_picker = pick_list(
